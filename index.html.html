@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calendário Compartilhado</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; }
+        body { background: #f3f4f6; display: flex; justify-content: center; align-items: center; min-height: 100vh; color: #1c2526; }
+        .container { background: rgba(255, 255, 255, 0.95); border-radius: 12px; padding: 20px; width: 90%; max-width: 1200px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1); backdrop-filter: blur(10px); display: flex; gap: 20px; }
+        .sidebar { width: 250px; padding: 20px; background: rgba(255, 255, 255, 0.8); border-radius: 8px; }
+        .sidebar h2 { font-size: 18px; margin-bottom: 20px; color: #005fb8; }
+        .org-list { max-height: 400px; overflow-y: auto; }
+        .org-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; margin-bottom: 10px; background: #f0f0f0; border-radius: 6px; transition: background 0.2s; }
+        .org-item:hover { background: #e5e5e5; }
+        .org-item button { background: none; border: none; cursor: pointer; color: #d13438; font-size: 14px; }
+        .calendar { flex: 1; padding: 20px; background: rgba(255, 255, 255, 0.8); border-radius: 8px; }
+        .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+        .calendar-day { padding: 10px; text-align: center; background: #f9f9f9; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
+        .calendar-day:hover { background: #e0e0e0; }
+        .event { color: white; padding: 5px; margin: 5px 0; border-radius: 4px; font-size: 12px; }
+        button { background: #005fb8; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; transition: background 0.2s; }
+        button:hover { background: #004a94; }
+        input, select { padding: 2px; border: 1px solid #ccc; border-radius: 3px; width: 100%; margin-bottom: 10px; }
+        .modal { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 400px; height: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2); z-index: 1000; }
+        .modal-content { text-align: center; }
+        .modal-content h2 { color: #005fb8; margin-bottom: 10px; }
+        .modal-content p { margin: 5px 0; }
+        .modal-actions { margin-top: 15px; }
+        .sidebar button { display: block; width: 100%; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h2>Organizações</h2>
+            <button onclick="openOrgModal()">Adicionar Organização</button>
+            <div class="org-list" id="orgList"></div>
+            <button onclick="downloadBackup()">Fazer Backup</button>
+            <button onclick="document.getElementById('backupInput').click()">Restaurar Backup</button>
+            <input type="file" id="backupInput" accept=".json" style="display: none;" onchange="loadBackup(event)">
+            <button onclick="exportToPDF()">Exportar para PDF</button>
+        </div>
+
+        <div class="calendar">
+            <div class="calendar-header">
+                <h2 id="monthYear"></h2>
+                <div>
+                    <button onclick="prevMonth()">Anterior</button>
+                    <button onclick="nextMonth()">Próximo</button>
+                </div>
+            </div>
+            <div class="calendar-grid" id="calendarGrid"></div>
+        </div>
+    </div>
+
+    <div class="modal" id="eventModal">
+        <div class="modal-content">
+            <h2 id="modalEventTitle"></h2>
+            <input type="text" id="eventTitle" placeholder="Título do Evento" style="display: none;">
+            <p><strong>Organização:</strong> <span id="modalEventOrg"></span></p>
+            <input type="date" id="eventDate" style="display: none;">
+            <p><strong>Data:</strong> <span id="modalEventDate"></span></p>
+            <input type="time" id="eventStartTime" style="display: none;">
+            <input type="time" id="eventEndTime" style="display: none;">
+            <select id="eventOrg" style="display: none;">
+                <option value="">Selecione uma Organização</option>
+            </select>
+            <p><strong>Horário:</strong> <span id="modalEventTime"></span></p>
+            <div class="modal-actions" id="modalActions">
+                <button onclick="saveEvent()">Salvar</button>
+                <button onclick="closeEventModal()">Fechar</button>
+            </div>
+            <div class="modal-actions" id="editActions" style="display: none;">
+                <button onclick="editEvent()">Editar</button>
+                <button onclick="deleteEventFromModal()">Excluir</button>
+                <button onclick="closeEventModal()">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="orgModal">
+        <div class="modal-content">
+            <h2 id="orgModalTitle">Adicionar Organização</h2>
+            <input type="text" id="orgName" placeholder="Nome da Organização">
+            <input type="color" id="orgColor" value="#005fb8">
+            <button onclick="saveOrg()">Salvar</button>
+            <button onclick="closeOrgModal()">Cancelar</button>
+        </div>
+    </div>
+
+<script>
+let organizations = [], events = [], currentDate = new Date(), selectedEvent = null;
+
+// Carregar dados do localStorage ao iniciar
+document.addEventListener('DOMContentLoaded', () => {
+    const savedData = localStorage.getItem('calendarData');
+    if (savedData) {
+        const data = JSON.parse(savedData);
+        organizations = data.organizations || [];
+        events = data.events || [];
+    }
+    renderCalendar();
+    renderOrgList();
+    window.addEventListener('beforeunload', saveData); // Salva automaticamente ao fechar
+});
+
+function saveData() {
+    const data = { organizations, events };
+    localStorage.setItem('calendarData', JSON.stringify(data));
+}
+
+function downloadBackup() {
+    const data = { organizations, events };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'backup.json';
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function loadBackup(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+        try {
+            const data = JSON.parse(reader.result);
+            organizations = data.organizations || [];
+            events = data.events || [];
+            saveData(); // Atualiza localStorage após restaurar
+            renderOrgList();
+            renderCalendar();
+        } catch (error) {
+            alert('Erro ao carregar backup: arquivo inválido!');
+        }
+    };
+    reader.readAsText(file);
+}
+
+function openOrgModal(org = null) {
+    document.getElementById('orgModalTitle').innerText = org ? 'Editar Organização' : 'Adicionar Organização';
+    document.getElementById('orgName').value = org ? org.name : '';
+    document.getElementById('orgColor').value = org ? org.color : '#005fb8';
+    document.getElementById('orgModal').dataset.editId = org ? org.id : '';
+    document.getElementById('orgModal').style.display = 'flex';
+}
+
+function closeOrgModal() {
+    document.getElementById('orgModal').style.display = 'none';
+}
+
+function saveOrg() {
+    const id = document.getElementById('orgModal').dataset.editId;
+    const name = document.getElementById('orgName').value.trim();
+    const color = document.getElementById('orgColor').value;
+    if (!name) return alert('Informe o nome.');
+    if (organizations.some(org => org.name.toLowerCase() === name.toLowerCase() && org.id !== (id || -1))) {
+        return alert('Nome de organização já existe!');
+    }
+    if (id) {
+        const org = organizations.find(o => o.id == id);
+        org.name = name;
+        org.color = color;
+    } else {
+        organizations.push({ id: Date.now(), name, color });
+    }
+    saveData();
+    renderOrgList();
+    closeOrgModal();
+}
+
+function deleteOrg(id) {
+    if (!confirm('Excluir organização?')) return;
+    organizations = organizations.filter(o => o.id !== id);
+    events = events.filter(e => e.orgId !== id);
+    saveData();
+    renderOrgList();
+    renderCalendar();
+}
+
+function renderOrgList() {
+    const orgList = document.getElementById('orgList');
+    orgList.innerHTML = '';
+    organizations.forEach(org => {
+        const div = document.createElement('div');
+        div.className = 'org-item';
+        div.innerHTML = `<span>${org.name}</span><div><button onclick='openOrgModal(${JSON.stringify(org)})'>Editar</button><button onclick='deleteOrg(${org.id})'>Excluir</button></div>`;
+        orgList.appendChild(div);
+    });
+    const orgSelect = document.getElementById('eventOrg');
+    orgSelect.innerHTML = '<option value="">Selecione uma Organização</option>';
+    organizations.forEach(org => {
+        orgSelect.innerHTML += `<option value="${org.id}">${org.name}</option>`;
+    });
+}
+
+function openEventModal(date, event = null) {
+    const modal = document.getElementById('eventModal');
+    const titleInput = document.getElementById('eventTitle');
+    const dateInput = document.getElementById('eventDate');
+    const startTimeInput = document.getElementById('eventStartTime');
+    const endTimeInput = document.getElementById('eventEndTime');
+    const orgSelect = document.getElementById('eventOrg');
+    const modalTitle = document.getElementById('modalEventTitle');
+    const modalOrg = document.getElementById('modalEventOrg');
+    const modalDate = document.getElementById('modalEventDate');
+    const modalTime = document.getElementById('modalEventTime');
+    const modalActions = document.getElementById('modalActions');
+    const editActions = document.getElementById('editActions');
+
+    if (event) {
+        // Modo de visualização/edição
+        selectedEvent = event;
+        modal.dataset.editId = event.id;
+        modalTitle.innerText = event.title;
+        const org = organizations.find(o => o.id === event.orgId);
+        modalOrg.innerText = org ? org.name : 'Sem organização';
+        modalDate.innerText = event.date;
+        modalTime.innerText = `${event.startTime} - ${event.endTime}`;
+        titleInput.style.display = 'none';
+        dateInput.style.display = 'none';
+        startTimeInput.style.display = 'none';
+        endTimeInput.style.display = 'none';
+        orgSelect.style.display = 'none';
+        modalActions.style.display = 'none';
+        editActions.style.display = 'block';
+    } else {
+        // Modo de adição
+        selectedEvent = null;
+        modal.dataset.editId = '';
+        modalTitle.innerText = 'Adicionar Evento';
+        modalOrg.innerText = '';
+        modalDate.innerText = date.toISOString().split('T')[0];
+        modalTime.innerText = '';
+        titleInput.style.display = 'block';
+        dateInput.style.display = 'block';
+        startTimeInput.style.display = 'block';
+        endTimeInput.style.display = 'block';
+        orgSelect.style.display = 'block';
+        dateInput.value = date.toISOString().split('T')[0];
+        titleInput.value = '';
+        startTimeInput.value = '';
+        endTimeInput.value = '';
+        orgSelect.value = '';
+        modalActions.style.display = 'block';
+        editActions.style.display = 'none';
+    }
+    modal.style.display = 'block';
+}
+
+function closeEventModal() {
+    document.getElementById('eventModal').style.display = 'none';
+    selectedEvent = null;
+}
+
+function editEvent() {
+    if (selectedEvent) {
+        const titleInput = document.getElementById('eventTitle');
+        const dateInput = document.getElementById('eventDate');
+        const startTimeInput = document.getElementById('eventStartTime');
+        const endTimeInput = document.getElementById('eventEndTime');
+        const orgSelect = document.getElementById('eventOrg');
+        const modalTitle = document.getElementById('modalEventTitle');
+        const modalOrg = document.getElementById('modalEventOrg');
+        const modalDate = document.getElementById('modalEventDate');
+        const modalTime = document.getElementById('modalEventTime');
+        const modalActions = document.getElementById('modalActions');
+        const editActions = document.getElementById('editActions');
+
+        modal.dataset.editId = selectedEvent.id;
+        modalTitle.innerText = 'Editar Evento';
+        titleInput.value = selectedEvent.title;
+        titleInput.style.display = 'block';
+        dateInput.value = selectedEvent.date;
+        dateInput.style.display = 'block';
+        startTimeInput.value = selectedEvent.startTime;
+        startTimeInput.style.display = 'block';
+        endTimeInput.value = selectedEvent.endTime;
+        endTimeInput.style.display = 'block';
+        orgSelect.value = selectedEvent.orgId;
+        orgSelect.style.display = 'block';
+        modalOrg.innerText = '';
+        modalDate.innerText = '';
+        modalTime.innerText = '';
+        modalActions.style.display = 'block';
+        editActions.style.display = 'none';
+    }
+}
+
+function deleteEventFromModal() {
+    if (selectedEvent && confirm('Excluir evento?')) {
+        events = events.filter(e => e.id !== selectedEvent.id);
+        saveData();
+        renderCalendar();
+        closeEventModal();
+    }
+}
+
+function saveEvent() {
+    const id = document.getElementById('eventModal').dataset.editId;
+    const title = document.getElementById('eventTitle').value;
+    const date = document.getElementById('eventDate').value;
+    const startTime = document.getElementById('eventStartTime').value;
+    const endTime = document.getElementById('eventEndTime').value;
+    const orgId = parseInt(document.getElementById('eventOrg').value);
+    if (!title || !date || !startTime || !endTime || !orgId) return alert('Preencha tudo.');
+
+    const startDateTime = new Date(`${date}T${startTime}`);
+    const endDateTime = new Date(`${date}T${endTime}`);
+
+    // Verifica conflitos de horário em qualquer organização no mesmo dia
+    const conflicts = events.filter(e => e.date === date && e.id !== (id || -1));
+    for (let event of conflicts) {
+        const eventStart = new Date(`${event.date}T${event.startTime}`);
+        const eventEnd = new Date(`${event.date}T${event.endTime}`);
+        if (startDateTime < eventEnd && endDateTime > eventStart) {
+            return alert('Conflito de horário! Já existe um evento sobreposto neste dia, independentemente da organização.');
+        }
+    }
+
+    if (id) {
+        const ev = events.find(e => e.id == id);
+        Object.assign(ev, { title, date, startTime, endTime, orgId });
+    } else {
+        events.push({ id: Date.now(), title, date, startTime, endTime, orgId });
+    }
+    saveData();
+    renderCalendar();
+    closeEventModal();
+}
+
+function renderCalendar() {
+    const monthYear = document.getElementById('monthYear');
+    const grid = document.getElementById('calendarGrid');
+    grid.innerHTML = '';
+    const month = currentDate.getMonth(), year = currentDate.getFullYear();
+    monthYear.innerText = currentDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    const firstDay = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].forEach(d => grid.innerHTML += `<div class='calendar-day'>${d}</div>`);
+    for (let i = 0; i < firstDay; i++) grid.appendChild(document.createElement('div'));
+    for (let day = 1; day <= daysInMonth; day++) {
+        const div = document.createElement('div');
+        div.className = 'calendar-day';
+        div.innerHTML = `<strong>${day}</strong>`;
+        div.onclick = () => openEventModal(new Date(year, month, day));
+        events.filter(e => e.date === `${year}-${(month + 1).toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`)
+            .forEach(e => {
+                const org = organizations.find(o => o.id === e.orgId);
+                const eventDiv = document.createElement('div');
+                eventDiv.className = 'event';
+                eventDiv.style.backgroundColor = org ? org.color : '#005fb8';
+                eventDiv.innerText = `${e.title} (${org?.name}) ${e.startTime}-${e.endTime}`;
+                eventDiv.onclick = (ev) => { ev.stopPropagation(); openEventModal(new Date(e.date), e); };
+                div.appendChild(eventDiv);
+            });
+        grid.appendChild(div);
+    }
+}
+
+function prevMonth() {
+    currentDate.setMonth(currentDate.getMonth() - 1);
+    renderCalendar();
+}
+
+function nextMonth() {
+    currentDate.setMonth(currentDate.getMonth() + 1);
+    renderCalendar();
+}
+
+function exportToPDF() {
+    let content = '<h1 style="font-family:Segoe UI; color:#005fb8">Organizações e Eventos</h1>';
+    organizations.forEach(org => {
+        content += `<h2 style="color:${org.color}">${org.name}</h2><ul>`;
+        events.filter(e => e.orgId === org.id && e.title && e.startTime && e.endTime).forEach(e => {
+            content += `<li>${e.date} ${e.startTime}-${e.endTime}: ${e.title}</li>`;
+        });
+        content += '</ul>';
+    });
+    const opt = { margin: 0.5, filename: 'calendario.pdf', html2canvas: { scale: 2 }, jsPDF: { unit: 'in', format: 'a4', orientation: 'portrait' } };
+    html2pdf().from(`<div>${content}</div>`).set(opt).save();
+}
+</script>
+</body>
+</html>
